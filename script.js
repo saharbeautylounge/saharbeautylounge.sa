@@ -21,6 +21,16 @@ window.addEventListener("pagehide", scrollToTopNow);
 window.addEventListener("pageshow", (e) => { if (e.persisted) scrollToTopNow(); });
 scrollToTopNow();
 
+/* No text / image selection or dragging (form fields stay editable) */
+(function(){
+  const isField = (t) => {
+    const el = t && (t.nodeType === 1 ? t : t.parentElement);
+    return !!(el && el.closest && el.closest("input, textarea, select"));
+  };
+  document.addEventListener("selectstart", (e) => { if (!isField(e.target)) e.preventDefault(); });
+  document.addEventListener("dragstart", (e) => { if (!isField(e.target)) e.preventDefault(); });
+})();
+
 const LANG_KEY = "sahar-lang";
 const rootEl = document.documentElement;
 let currentLang = rootEl.lang === "ar" ? "ar" : "en";
@@ -246,7 +256,12 @@ function fitBadgeText(){
   tp.style.wordSpacing = Math.max(0, (ring - tp.getComputedTextLength()) / spaces) + "px";
 }
 let badgeFrame = 0;
-window.addEventListener("resize", () => { cancelAnimationFrame(badgeFrame); badgeFrame = requestAnimationFrame(fitBadgeText); });
+let badgeWidth = window.innerWidth;
+window.addEventListener("resize", () => {
+  if (window.innerWidth === badgeWidth) return;
+  badgeWidth = window.innerWidth;
+  cancelAnimationFrame(badgeFrame); badgeFrame = requestAnimationFrame(fitBadgeText);
+});
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitBadgeText);  
 
 const langSwitch = document.getElementById("langSwitch");
@@ -587,13 +602,28 @@ document.getElementById("serviceTabs").addEventListener("click", (e) => {
       p.classList.remove("is-active");
     }
   });
+  if (window.ScrollTrigger && animationsStarted) requestAnimationFrame(() => ScrollTrigger.refresh());
 });
 
 
 const siteNav = document.getElementById("siteNav");
+let navScrolled = false;
 window.addEventListener("scroll", () => {
-  siteNav.classList.toggle("is-scrolled", window.scrollY > 30);
+  const scrolled = window.scrollY > 30;
+  if (scrolled === navScrolled) return;
+  navScrolled = scrolled;
+  siteNav.classList.toggle("is-scrolled", scrolled);
 }, { passive: true });
+
+/* pause the endless hero CSS animations while the hero is off-screen */
+if ("IntersectionObserver" in window){
+  const heroEl = document.querySelector(".hero");
+  if (heroEl){
+    new IntersectionObserver((entries) => {
+      heroEl.classList.toggle("is-offscreen", !entries[0].isIntersecting);
+    }, { rootMargin: "120px 0px" }).observe(heroEl);
+  }
+}
 
 const navBurger = document.getElementById("navBurger");
 const navLinks = document.getElementById("navLinks");
@@ -648,8 +678,12 @@ if (!window.gsap || !window.ScrollTrigger){
 function startAnimations(){
   if (animationsStarted) return;
   animationsStarted = true;
-  if (!(window.gsap && window.ScrollTrigger)) return;
+  if (!(window.gsap && window.ScrollTrigger)){
+    document.querySelectorAll(".stat-num-val").forEach(el => { el.textContent = el.dataset.value || 0; });
+    return;
+  }
   gsap.registerPlugin(ScrollTrigger);
+  ScrollTrigger.config({ ignoreMobileResize: true });
 
   gsap.set(".eyebrow-ar, .hero-sub, .hero-cta, .hero-trust", { y: 14 });
   gsap.set(".hero-scroll", { opacity: 0 });
@@ -680,17 +714,23 @@ function startAnimations(){
     .to(".draw-dot", { opacity: 1, scale: 1.2, duration: .4, stagger: .15 }, "-=0.6")
     .to(".petal", { opacity: 1, duration: .6, stagger: .1 }, "-=0.4");
 
-  gsap.utils.toArray(".stat-num-val").forEach(el => {
-    const target = Number(el.dataset.value || 0);
-    const counter = { val: 0 };
+  const statVals = gsap.utils.toArray(".stat-num-val").map(el => ({
+    node: el.firstChild || el.appendChild(document.createTextNode("0")),
+    target: Number(el.dataset.value || 0), val: 0, shown: 0
+  }));
+  if (statVals.length){
     ScrollTrigger.create({
-      trigger: el, start: "top 88%", once: true,
-      onEnter: () => gsap.to(counter, {
-        val: target, duration: 1.4, ease: "power2.out",
-        onUpdate: () => { el.textContent = Math.round(counter.val); }
-      })
+      trigger: ".about-stats", start: "top 88%", once: true,
+      onEnter: () => statVals.forEach(s => gsap.to(s, {
+        val: s.target, duration: 2.2, ease: "power2.out", overwrite: true,
+        onUpdate: () => {
+          const n = Math.round(s.val);
+          if (n !== s.shown){ s.shown = n; s.node.nodeValue = n; }   // touch the DOM only when the number changes
+        },
+        onComplete: () => { s.node.nodeValue = s.target; }
+      }))
     });
-  });
+  }
 
   gsap.utils.toArray(".section-head").forEach(head => {
     gsap.from(head.children, {
@@ -731,6 +771,14 @@ function startAnimations(){
     opacity: 0, y: 16, duration: .8, stagger: .08, ease: "power2.out",
     scrollTrigger: { trigger: ".site-footer", start: "top 92%" }
   });
+
+  if (document.fonts && document.fonts.addEventListener){
+    let fontTimer;
+    document.fonts.addEventListener("loadingdone", () => {
+      clearTimeout(fontTimer);
+      fontTimer = setTimeout(() => ScrollTrigger.refresh(), 150);
+    });
+  }
 }
 
 let directionalCtx = null;
@@ -740,7 +788,7 @@ function buildDirectionalAnimations(){
   const flip = rootEl.dir === "rtl" ? -1 : 1;
 
   const slide = (px) => (i, el) => {
-    if (Math.sign(px) !== flip) return px;                    unchanged
+    if (Math.sign(px) !== flip) return px;   // unchanged
     const r = el.getBoundingClientRect();
     const room = flip > 0 ? rootEl.clientWidth - r.right : r.left;
     return flip * Math.min(Math.abs(px), Math.max(0, room));
